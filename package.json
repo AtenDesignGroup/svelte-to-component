@@ -1,0 +1,29 @@
+{
+  "name": "svelte-to-component",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "bin": {
+    "svelte-to-component": "dist/esm/index.js"
+  },
+  "scripts": {
+    "dev": "rollup -c --watch",
+    "build": "rollup -c"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^28.0.1",
+    "@rollup/plugin-node-resolve": "^15.3.0",
+    "@rollup/plugin-typescript": "^12.1.1",
+    "@types/node": "^22.8.4",
+    "rollup": "^4.24.3",
+    "tslib": "^2.8.0",
+    "typescript": "~5.6.2"
+  },
+  "dependencies": {
+    "glob": "^11.0.0",
+    "prettier": "^2.8.8",
+    "prettier-plugin-twig-melody": "^0.4.6",
+    "svelte": "^5.1.6",
+    "yargs": "^17.7.2"
+  }
+}
