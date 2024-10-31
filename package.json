@@ -1,6 +1,7 @@
 {
-  "name": "svelte-to-component",
-  "private": true,
+  "name": "@atendesign/svelte-to-component",
+  "private": false,
+  "scope": "atendesign",
   "version": "0.0.0",
   "type": "module",
   "bin": {
