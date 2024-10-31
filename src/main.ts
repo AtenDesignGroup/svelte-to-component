@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import fs from 'node:fs';
 import type { PathLike } from 'fs';
 import path from 'path';
