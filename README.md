@@ -7,7 +7,7 @@ You can use the script by running it from the command line with the required `in
 To convert all `.svelte` component files in the `src` directory to `.twig` files in the `dist` directory, run the following command:
 
 ```sh
-npx svelte-to-component --input 'src' --output 'dist'
+npx @atendesign/svelte-to-component --input 'src' --output 'dist'
 ```
 
 This will process all `.svelte` files in the src directory and save the converted `.twig` files in the dist directory, maintaining the relative directory structure.
