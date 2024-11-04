@@ -2,15 +2,17 @@
 import fs from 'node:fs';
 import type { PathLike } from 'fs';
 import path from 'path';
-import { glob, Path } from 'glob';
+import { glob } from 'glob';
 import { parse } from 'svelte/compiler';
 import prettier from 'prettier';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 
 interface ProcessFilesOptions {
-  input: string; // Glob pattern for input files
+  input: string; // Directory where svelte components are located
   output: string; // Directory where the results are saved
+  glob: string; // Glob pattern for input files
+  saveAst: boolean; // Save AST to a JSON file
 }
 
 // Parse command-line arguments
@@ -27,21 +29,31 @@ const argv = yargs(hideBin(process.argv))
     description: 'Directory where the results are saved',
     demandOption: true, // Make output option required
   })
+  .option('glob', {
+    alias: 'g',
+    type: 'string',
+    description: 'Glob pattern for input files. This can be used to target specific files within the input directory.',
+    demandOption: false,
+    default: '**/*.svelte',
+  })
+  .option('save-ast', {
+    type: 'boolean',
+    description: 'Save AST to a JSON file',
+    demandOption: false,
+    default: false,
+  })
   .help()
   .argv;
 
-
-
 function createOutputDir(outputDir: PathLike) {
   if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir);
+    fs.mkdirSync(outputDir, { recursive: true });
   }
 }
 
-createOutputDir(path.join(process.cwd(), 'svelteToTwig'));
-
 // Function to save AST to a JSON file
-function saveAstToFile(filePath: PathLike, ast: Record<string, any>, dest: PathLike) {
+function saveAstToFile(filePath: PathLike, ast: Record<string, any>, options: ProcessFilesOptions) {
+  const dest = path.resolve(options.output);
   const outputDir = path.join(dest.toString(), '/ast');
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir);
@@ -52,12 +64,16 @@ function saveAstToFile(filePath: PathLike, ast: Record<string, any>, dest: PathL
 }
 
 // Function to save Twig file
-async function saveTwigToFile(filePath: PathLike, template: string, dest: PathLike) {
+async function saveTwigToFile(filePath: PathLike, template: string, options: ProcessFilesOptions) {
+  const { input, output: dest } = options;
+  const relativePath = filePath.toString().replace(input, '');
   const outputDir = path.join(dest.toString(), '/twig');
-  if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir);
+  const outputFilePath = path.join(outputDir, relativePath.toString().replace('.svelte', '.twig'));
+  // get the directory name from outputFilePath
+  const dirname = path.dirname(outputFilePath);
+  if (!fs.existsSync(dirname)) {
+    fs.mkdirSync(dirname, {recursive: true});
   }
-  const outputFilePath = path.join(outputDir, `${path.basename(filePath.toString())}.twig`.replace('.svelte', ''));
 
   // Format the Twig template using Prettier
   try {
@@ -186,48 +202,36 @@ function processFile(options: ProcessFilesOptions) {
   return (filePath: PathLike) => {
     const fileContent = fs.readFileSync(filePath, 'utf-8');
     const ast: Record<string, any> = parse(fileContent);
-    saveAstToFile(filePath, ast, options.output);
+
+    if (options.saveAst) {
+      saveAstToFile(filePath, ast, options);
+    }
+
     const twigTemplate = convertNodeToTwig(ast.html);
-    saveTwigToFile(filePath, twigTemplate, options.output);
+    saveTwigToFile(filePath, twigTemplate, options);
   }
 }
 
-
 export default async function processFiles(options: ProcessFilesOptions): Promise<void> {
-  const { input, output } = options;
+  const { input, output, glob: globPattern } = options;
 
   // Ensure the output directory exists
   createOutputDir(output);
 
   // Find files matching the input glob pattern and process each one.
   try {
-    const files: PathLike[] = await glob(input);
+    const files: PathLike[] = await glob(path.join(input, globPattern));
     files.forEach(processFile(options));
   } catch (error) {
     console.error('Error finding files:', error);
     return;
   }
-
-
-
-  // interface GlobResult {
-  //   (pattern: string): Promise<string[]>;
-  // }
-
-  // const globResult: GlobResult = glob;
-
-  // globResult(globPattern)
-  //   .then((files: string[]) => {
-  //     console.log('Found .svelte files:', files);
-  //     files.forEach(processFile);
-  //   })
-  //   .catch((err: Error) => {
-  //     console.error('Error finding .svelte files:', err);
-  //   });
 };
 
 // Call processFiles with parsed options
 processFiles({
   input: argv.input,
   output: argv.output,
+  glob: argv.glob,
+  saveAst: argv['save-ast'],
 });
