@@ -13,6 +13,7 @@ interface ProcessFilesOptions {
   output: string; // Directory where the results are saved
   glob: string; // Glob pattern for input files
   saveAst: boolean; // Save AST to a JSON file
+  saveComponentDef: boolean; // Save component definition to a component.yml file
 }
 
 // Parse command-line arguments
@@ -34,7 +35,7 @@ const argv = yargs(hideBin(process.argv))
     type: 'string',
     description: 'Glob pattern for input files. This can be used to target specific files within the input directory.',
     demandOption: false,
-    default: '**/*.svelte',
+    default: '**/!(*.stories).svelte',
   })
   .option('save-ast', {
     type: 'boolean',
@@ -42,12 +43,52 @@ const argv = yargs(hideBin(process.argv))
     demandOption: false,
     default: false,
   })
+  .option('save-component-def', {
+    type: 'boolean',
+    alias: 'c',
+    description: 'Save component definition to a component.yml file',
+    demandOption: false,
+    default: true,
+  })
   .help()
   .argv;
 
 function createOutputDir(outputDir: PathLike) {
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });
+  }
+}
+
+/**
+ * Checks if a tag is self-closing.
+ * @param name
+ * @returns boolean
+ * @see https://developer.mozilla.org/en-US/docs/Glossary/Empty_element
+ */
+function isSelfClosingTag(name: string): boolean {
+  const selfClosingTags = new Set([
+    'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'
+  ]);
+  return selfClosingTags.has(name);
+}
+
+function saveComponentDefToFile(filePath: PathLike, componentDef: string, options: ProcessFilesOptions) {
+  const { input, output: dest } = options;
+  const relativePath = filePath.toString().replace(input, '');
+  const outputDir = path.join(dest.toString(), '/twig');
+  const outputFilePath = path.join(outputDir, relativePath.toString().replace('.svelte', '.component.yml'));
+  // get the directory name from outputFilePath
+  const dirname = path.dirname(outputFilePath);
+  if (!fs.existsSync(dirname)) {
+    fs.mkdirSync(dirname, {recursive: true});
+  }
+
+  // Format the Twig template using Prettier
+  try {
+    console.log(`Saving ComponentDef to ${outputFilePath}`);
+    fs.writeFileSync(outputFilePath, componentDef.toString());
+  } catch (error) {
+    console.error('Error formatting Twig template:', error);
   }
 }
 
@@ -91,6 +132,12 @@ async function saveTwigToFile(filePath: PathLike, template: string, options: Pro
 
 }
 
+// Function to convert AST node to component definition
+function convertNodeToComponentDef(node: any) : string {
+  console.log(Object.keys(node));
+  return 'component.def';
+}
+
 // Function to convert AST node to Twig
 function convertNodeToTwig(node: any) : string {
   let children = '';
@@ -104,6 +151,12 @@ function convertNodeToTwig(node: any) : string {
       case 'BinaryExpression':
         return `${convertNodeToTwig(node.left)} ${node.operator === '===' ? '==' : node.operator } ${convertNodeToTwig(node.right)}`;
       case 'CallExpression':
+        // Handle Object.entries
+        // We'll assume objects passed to the template are associative arrays in PHP,
+        // so we should beable to use the arguments directly.
+        if (node.callee.type === 'MemberExpression' && node.callee.object.name === 'Object' && node.callee.property.name === 'entries') {
+          return node.arguments.map(convertNodeToTwig).join(', ');
+        }
         return `${convertNodeToTwig(node.callee)}(${node.arguments.map(convertNodeToTwig).join(', ')})`;
       case 'ConditionalExpression':
         return `${convertNodeToTwig(node.test)} ? ${convertNodeToTwig(node.consequent)} : ${convertNodeToTwig(node.alternate)}`;
@@ -120,7 +173,11 @@ function convertNodeToTwig(node: any) : string {
       case 'Element':
         attributes = node.attributes.map(convertNodeToTwig).join(' ');
         children = node.children.map(convertNodeToTwig).join('');
-        return `<${node.name} ${attributes}>${children}</${node.name}>`;
+        if (isSelfClosingTag(node.name)) {
+          return `<${node.name} ${attributes} />`;
+        } else {
+          return `<${node.name} ${attributes}>${children}</${node.name}>`;
+        }
       case 'Identifier':
         return node.name;
       case 'MemberExpression':
@@ -177,6 +234,8 @@ function convertNodeToObjectLiteral(node: any) : string {
         return `${node.elements.map(convertNodeToTwig).join(', ')}`;
       case 'Attribute':
         return `${node.name}: ${node.value.map(convertNodeToObjectLiteral).join(' ')}`;
+      case 'AttributeShorthand':
+        return node.expression.name;
       case 'Identifier':
         return node.name;
       case 'Literal':
@@ -207,6 +266,11 @@ function processFile(options: ProcessFilesOptions) {
       saveAstToFile(filePath, ast, options);
     }
 
+    if (options.saveComponentDef) {
+      const componentDef = convertNodeToComponentDef(ast);
+      saveComponentDefToFile(filePath, componentDef, options);
+    }
+
     const twigTemplate = convertNodeToTwig(ast.html);
     saveTwigToFile(filePath, twigTemplate, options);
   }
@@ -222,6 +286,7 @@ export default async function processFiles(options: ProcessFilesOptions): Promis
   try {
     const files: PathLike[] = await glob(path.join(input, globPattern));
     files.forEach(processFile(options));
+    console.log(files);
   } catch (error) {
     console.error('Error finding files:', error);
     return;
@@ -234,4 +299,5 @@ processFiles({
   output: argv.output,
   glob: argv.glob,
   saveAst: argv['save-ast'],
+  saveComponentDef: argv['save-component-def'],
 });
