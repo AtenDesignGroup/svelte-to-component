@@ -14,6 +14,15 @@ interface ProcessFilesOptions {
   glob: string; // Glob pattern for input files
   saveAst: boolean; // Save AST to a JSON file
   saveComponentDef: boolean; // Save component definition to a component.yml file
+  defaultSlotName?: string; // Default slot ID
+}
+
+interface ComponentContext {
+  name: string;
+  components: Record<string, any>;
+  props: Record<string, any>;
+  slots: Record<string, any>;
+  styleSheets: Record<string, any>;
 }
 
 // Parse command-line arguments
@@ -49,6 +58,12 @@ const argv = yargs(hideBin(process.argv))
     description: 'Save component definition to a component.yml file',
     demandOption: false,
     default: true,
+  })
+  .option('default-slot-name', {
+    type: 'string',
+    description: 'Default slot name. Svelte slots get converted to Twig blocks which require names. Svelte allows each component to have up to one default nameless slot. This option is used to identtify the Twig block that replaces any Svelte component\'s default slot.',
+    demandOption: false,
+    default: 'content',
   })
   .help()
   .argv;
@@ -133,46 +148,138 @@ async function saveTwigToFile(filePath: PathLike, template: string, options: Pro
 }
 
 // Function to convert AST node to component definition
-function convertNodeToComponentDef(node: any) : string {
-  console.log(Object.keys(node));
-  return 'component.def';
+function convertNodeToComponentDef(node: any, context: ComponentContext) : string {
+  let output = `$schema: https://git.drupalcode.org/project/drupal/-/raw/10.3.x/core/assets/schemas/v1/metadata.schema.json
+name: ${context.name}`;
+
+  /**
+   * @todo Add support for required properties
+   *
+   *    # If your component has required properties, you list them here.
+   *  required:
+   *   - primary
+   */
+
+ if (context.props) {
+    output += `
+props:
+  type: object
+  properties:`;
+    for (const key in context.props) {
+      output += `
+    ${key}:
+      type: ${context.props[key].type}`;
+
+    /**
+     * @todo Add support for human-readable titles
+     *
+     * title: My Component
+     */
+    if (context.props[key].title) {
+      output += `
+      title: ${context.props[key].title}`;
+    }
+
+    // Add default value if it exists
+    if (context.props[key].default) {
+      output += `
+      default: ${context.props[key].default}`;
+    }
+
+    /**
+     * @todo Add support for enum values
+     *
+     * enum:
+     *   - 'One'
+     *   - 'Two'
+     *   - 'Three'
+     *   - null
+     */
+    if (context.props[key].enum) {
+      output += `
+      enum: ${context.props[key].enum}`;
+    }
+
+    /**
+     * @todo Add support for descriptions
+     */
+    if (context.props[key].description) {
+      output += `
+      description: ${context.props[key].description}`;
+    }
+  }}
+
+  if (context.slots.length > 0) {
+    output += `
+slots:`;
+  context.slots.forEach((slot: any) => {
+  output += `
+  ${slot}: {}`;
+  });
+}
+
+
+
+/**
+ * @todo Add support for library overrides
+ */
+// # This is how you take control of the keys in your library
+// # declaration. The overrides specified here will be merged (shallow merge)
+// # with the auto-generated library. The result of the merge will become the
+// # library for the component.
+// libraryOverrides:
+//   # Once you add a key in the overrides, you take control of it. What you
+//   # type here is what will end up in the library component.
+//   dependencies:
+//     - core/drupal
+//     - core/once
+
+//   # Here we are taking control of the JS assets. So we need to specify
+//   # everything, even the parts that were auto-generated. This is useful
+//   # when adding additional files or tweaking the <script>
+//   # tag's attributes.
+//   js:
+//     my-component.js: { attributes: { defer: true } }
+//     my-other-file.js: {}`
+
+  return output;
 }
 
 // Function to convert AST node to Twig
-function convertNodeToTwig(node: any) : string {
+function convertNodeToTwig(node: any, options: ProcessFilesOptions) : string {
   let children = '';
   let attributes = '';
   try {
     switch (node.type) {
       case 'Attribute':
-        return `${node.name}="${node.value.map(convertNodeToTwig).join(' ')}"`
+        return `${node.name}="${node.value.map(childNode => convertNodeToTwig(childNode, options)).join('')}"`
       case 'ArrayPattern':
-        return `${node.elements.map(convertNodeToTwig).join(', ')}`;
+        return `${node.elements.map(childNode => convertNodeToTwig(childNode, options)).join(', ')}`;
       case 'BinaryExpression':
-        return `${convertNodeToTwig(node.left)} ${node.operator === '===' ? '==' : node.operator } ${convertNodeToTwig(node.right)}`;
+        return `${convertNodeToTwig(node.left, options)} ${node.operator === '===' ? '==' : node.operator } ${convertNodeToTwig(node.right, options)}`;
       case 'CallExpression':
         // Handle Object.entries
         // We'll assume objects passed to the template are associative arrays in PHP,
         // so we should beable to use the arguments directly.
         if (node.callee.type === 'MemberExpression' && node.callee.object.name === 'Object' && node.callee.property.name === 'entries') {
-          return node.arguments.map(convertNodeToTwig).join(', ');
+          return node.arguments.map(childNode => convertNodeToTwig(childNode, options)).join(', ');
         }
-        return `${convertNodeToTwig(node.callee)}(${node.arguments.map(convertNodeToTwig).join(', ')})`;
+        return `${convertNodeToTwig(node.callee, options)}(${node.arguments.map(childNode => convertNodeToTwig(childNode, options)).join(', ')})`;
       case 'ConditionalExpression':
-        return `${convertNodeToTwig(node.test)} ? ${convertNodeToTwig(node.consequent)} : ${convertNodeToTwig(node.alternate)}`;
+        return `${convertNodeToTwig(node.test, options)} ? ${convertNodeToTwig(node.consequent, options)} : ${convertNodeToTwig(node.alternate, options)}`;
       case 'Fragment':
         if (node.children) {
-          return node.children.map(convertNodeToTwig).join('');
+          return node.children.map(childNode => convertNodeToTwig(childNode, options)).join('');
         }
         return '';
       case 'Literal':
         return node.raw;
       case 'LogicalExpression':
         let operator = node.operator === '&&' ? 'and' : 'or';
-        return `${convertNodeToTwig(node.left)} ${operator} ${convertNodeToTwig(node.right)}`;
+        return `${convertNodeToTwig(node.left, options)} ${operator} ${convertNodeToTwig(node.right, options)}`;
       case 'Element':
-        attributes = node.attributes.map(convertNodeToTwig).join(' ');
-        children = node.children.map(convertNodeToTwig).join('');
+        attributes = node.attributes.map(childNode => convertNodeToTwig(childNode, options)).join(' ');
+        children = node.children.map(childNode => convertNodeToTwig(childNode, options)).join('');
         if (isSelfClosingTag(node.name)) {
           return `<${node.name} ${attributes} />`;
         } else {
@@ -181,40 +288,49 @@ function convertNodeToTwig(node: any) : string {
       case 'Identifier':
         return node.name;
       case 'MemberExpression':
-        return `${convertNodeToTwig(node.object)}.${convertNodeToTwig(node.property)}`;
+        return `${convertNodeToTwig(node.object, options)}.${convertNodeToTwig(node.property, options)}`;
       case 'MustacheTag':
         return node.expression.type === 'TemplateLiteral'
-          ? convertNodeToTwig(node.expression)
-          : `{{ ${convertNodeToTwig(node.expression)} }}`;
+          ? convertNodeToTwig(node.expression, options)
+          : `{{ ${convertNodeToTwig(node.expression, options)} }}`;
       case 'IfBlock':
-        const condition = convertNodeToTwig(node.expression);
-        const ifChildren = node.children.map(convertNodeToTwig).join('');
+        const condition = convertNodeToTwig(node.expression, options);
+        const ifChildren = node.children.map(childNode => convertNodeToTwig(childNode, options)).join('');
         return `{% if ${condition} %}${ifChildren}{% endif %}`;
       case 'InlineComponent':
-        children = node.children.map(convertNodeToTwig).join('');
-        attributes = node.attributes.map(convertNodeToObjectLiteral).join(', ');
+        children = node.children.map(childNode => convertNodeToTwig(childNode, options)).join('');
+        attributes = node.attributes.map(childNode => convertNodeToObjectLiteral(childNode, options)).join(', ');
         return `\n{% embed "${node.name}" with {${attributes}} only %}${children}{% endembed %}`;
       case 'EachBlock':
-        const eachChildren = node.children.map(convertNodeToTwig).join('');
+        const eachChildren = node.children.map(childNode => convertNodeToTwig(childNode, options)).join('');
         // Handle destructured each block
         if (node.context.type === 'ArrayPattern') {
-          return `{% for ${convertNodeToTwig(node.context)} in ${convertNodeToTwig(node.expression)} %}${eachChildren}{% endfor %}`;
+          return `{% for ${convertNodeToTwig(node.context, options)} in ${convertNodeToTwig(node.expression, options)} %}${eachChildren}{% endfor %}`;
         }
         if (node.context.type === 'ObjectPattern') {
-          return `{% for ${convertNodeToTwig(node.expression)}_item in ${convertNodeToTwig(node.expression)} %}${eachChildren}{% endfor %}`;
+          return `{% for ${convertNodeToTwig(node.expression, options)}_item in ${convertNodeToTwig(node.expression, options)} %}${eachChildren}{% endfor %}`;
         }
-        return `{% for ${convertNodeToTwig(node.expression)}_item in ${convertNodeToTwig(node.expression)} %}${eachChildren}{% endfor %}`;
+        return `{% for ${convertNodeToTwig(node.expression, options)}_item in ${convertNodeToTwig(node.expression, options)} %}${eachChildren}{% endfor %}`;
+      case 'Slot':
+        let id = options.defaultSlotName;
+        const nameAttribute = node.attributes.find((attr: any) => { return attr.name === 'name'; });
+        if (nameAttribute) {
+          id = nameAttribute.value[0].data;
+        } else {
+          console.warn(`\x1b[43m The svelte component has an unnamed slot which is unsupported in Twig. Using the default-slot-name of "${options.defaultSlotName}" as a fallback. This still may cause issues in component.yml. To fix this, set a name for the slot. \x1b[0m`);
+        }
+        return `{% block ${id} %}${node.children.map(childNode => convertNodeToTwig(childNode, options)).join('')}{% endblock %}`;
       case 'TemplateElement':
         return node.value.raw;
       case 'TemplateLiteral':
         if (node.expressions?.length > 0) {
-          return `${node.quasis.map(convertNodeToTwig).join('')} {{${node.expressions.map(convertNodeToTwig).join('')}}}`;
+          return `${node.quasis.map(childNode => convertNodeToTwig(childNode, options)).join('')} {{${node.expressions.map(childNode => convertNodeToTwig(childNode, options)).join('')}}}`;
         }
-        return node.quasis.map(convertNodeToTwig).join('');
+        return node.quasis.map(childNode => convertNodeToTwig(childNode, options)).join('');
       case 'Text':
         return node.data;
       case 'UnaryExpression':
-        return `${node.operator === '!' ? 'not ' : node.operator}${convertNodeToTwig(node.argument)}`;
+        return `${node.operator === '!' ? 'not ' : node.operator}${convertNodeToTwig(node.argument, options)}`;
       default:
         return '';
     }
@@ -225,15 +341,15 @@ function convertNodeToTwig(node: any) : string {
   return '';
 }
 
-function convertNodeToObjectLiteral(node: any) : string {
+function convertNodeToObjectLiteral(node: any, options: ProcessFilesOptions) : string {
   try {
     switch (node.type) {
       case 'ArrayExpression':
-        return `[${node.elements.map(convertNodeToObjectLiteral).join(', ')}]`;
+        return `[${node.elements.map(childNode => convertNodeToObjectLiteral(childNode, options)).join(', ')}]`;
       case 'ArrayPattern':
-        return `${node.elements.map(convertNodeToTwig).join(', ')}`;
+        return `${node.elements.map(childNode => convertNodeToTwig(childNode, options)).join(', ')}`;
       case 'Attribute':
-        return `${node.name}: ${node.value.map(convertNodeToObjectLiteral).join(' ')}`;
+        return `${node.name}: ${node.value.map(childNode => convertNodeToObjectLiteral(childNode, options)).join(' ')}`;
       case 'AttributeShorthand':
         return node.expression.name;
       case 'Identifier':
@@ -241,11 +357,11 @@ function convertNodeToObjectLiteral(node: any) : string {
       case 'Literal':
         return node.raw;
       case 'ObjectExpression':
-        return `{${node.properties.map(convertNodeToObjectLiteral).join(', ')}}`;
+        return `{${node.properties.map(childNode => convertNodeToObjectLiteral(childNode, options)).join(', ')}}`;
       case 'Property':
-        return `${node.key.name}: ${convertNodeToObjectLiteral(node.value)}`;
+        return `${node.key.name}: ${convertNodeToObjectLiteral(node.value, options)}`;
       case 'MustacheTag':
-        return convertNodeToObjectLiteral(node.expression);
+        return convertNodeToObjectLiteral(node.expression, options);
       case 'Text':
         return `'${node.data}'`;
     }
@@ -256,22 +372,114 @@ function convertNodeToObjectLiteral(node: any) : string {
   return '';
 }
 
+function createComponentContext(
+  ast: Record<string, any>,
+  filePath: PathLike,
+  options: ProcessFilesOptions
+): ComponentContext {
+  // Extract component name from file path
+  const name = path.basename(filePath.toString(), '.svelte');
+
+  // Initialize context
+  const context: ComponentContext = {
+    name,
+    components: {},
+    props: null,
+    slots: [],
+    styleSheets: {},
+  };
+
+  // Infer component props from any exported let declarations
+  ast.instance?.content.body.forEach((node: any) => {
+    if (node.type === 'ExportNamedDeclaration') {
+      node.declaration.declarations.forEach((declaration: any) => {
+
+        if (declaration.type === 'VariableDeclarator' && declaration.id.type === 'Identifier') {
+          if (!context.props) {
+            context.props = {};
+          };
+
+          const id = declaration.id.name;
+          let type = 'string';
+          let defaultValue;
+
+          if (declaration.init?.type === 'ArrayExpression') {
+            type = 'array';
+            defaultValue = `[${declaration.init.elements.map((element: any) => element.raw).join(', ')}]`;
+          } else if (declaration.init?.type === 'Literal') {
+            switch (typeof declaration.init.value) {
+              case 'boolean':
+                type = 'boolean';
+                defaultValue = declaration.init.value;
+                break;
+              case 'number':
+                type = 'number';
+                defaultValue = declaration.init.value;
+                break;
+              case 'string':
+                type = 'string';
+                defaultValue = declaration.init.value;
+                break;
+              default:
+                defaultValue = declaration.init.raw;
+                type = 'string';
+            }
+          } else if (declaration.init?.type === 'ObjectExpression') {
+            type = 'object';
+          }
+
+          else if (declaration.init?.type) {
+            console.log(declaration.init.type);
+          }
+
+          context.props[id] = {
+            type,
+            title: '',
+            description: '',
+            enum: '',
+          };
+          // Set default value if it exists
+          if (typeof defaultValue !== 'undefined') {
+            context.props[id].default = defaultValue;
+          }
+        }
+      });
+    }
+  });
+
+  // Infer slots by recursively searching the AST html for slot nodes.
+  function findSlots(node: any) {
+    if (node.type === 'Slot') {
+      const id = node.attributes.find((attr: any) => { return attr.name === 'name'; });
+      context.slots.push(id ? id.value[0].data : options.defaultSlotName);
+    }
+    if (node.children) {
+      node.children.forEach(findSlots);
+    }
+  }
+  findSlots(ast.html);
+
+  return context;
+}
+
 // Function to process each .svelte file
 function processFile(options: ProcessFilesOptions) {
   return (filePath: PathLike) => {
     const fileContent = fs.readFileSync(filePath, 'utf-8');
     const ast: Record<string, any> = parse(fileContent);
+    const context = createComponentContext(ast, filePath, options);
+
 
     if (options.saveAst) {
       saveAstToFile(filePath, ast, options);
     }
 
     if (options.saveComponentDef) {
-      const componentDef = convertNodeToComponentDef(ast);
+      const componentDef = convertNodeToComponentDef(ast, context);
       saveComponentDefToFile(filePath, componentDef, options);
     }
 
-    const twigTemplate = convertNodeToTwig(ast.html);
+    const twigTemplate = convertNodeToTwig(ast.html, options);
     saveTwigToFile(filePath, twigTemplate, options);
   }
 }
@@ -286,7 +494,6 @@ export default async function processFiles(options: ProcessFilesOptions): Promis
   try {
     const files: PathLike[] = await glob(path.join(input, globPattern));
     files.forEach(processFile(options));
-    console.log(files);
   } catch (error) {
     console.error('Error finding files:', error);
     return;
@@ -300,4 +507,5 @@ processFiles({
   glob: argv.glob,
   saveAst: argv['save-ast'],
   saveComponentDef: argv['save-component-def'],
+  defaultSlotName: argv['default-slot-name'],
 });
