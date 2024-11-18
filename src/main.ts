@@ -14,6 +14,7 @@ interface ProcessFilesOptions {
   glob: string; // Glob pattern for input files
   saveAst: boolean; // Save AST to a JSON file
   saveComponentDef: boolean; // Save component definition to a component.yml file
+  saveStyles: boolean; // Save SCSS styles to the src directory
   defaultSlotName?: string; // Default slot ID
 }
 
@@ -44,13 +45,19 @@ const argv = yargs(hideBin(process.argv))
     type: 'string',
     description: 'Glob pattern for input files. This can be used to target specific files within the input directory.',
     demandOption: false,
-    default: '**/!(*.stories).svelte',
+    default: '**/components/**/!(*.stories).svelte',
   })
   .option('save-ast', {
     type: 'boolean',
     description: 'Save AST to a JSON file',
     demandOption: false,
     default: false,
+  })
+  .option('save-styles', {
+    type: 'boolean',
+    description: 'Save SCSS styles to the src directory',
+    demandOption: false,
+    default: true,
   })
   .option('save-component-def', {
     type: 'boolean',
@@ -498,14 +505,59 @@ export default async function processFiles(options: ProcessFilesOptions): Promis
     console.error('Error finding files:', error);
     return;
   }
+
+  //
+  // Handle component styles.
+  //
+  if (options.saveStyles) {
+    copyScssFiles(options);
+  }
 };
 
+/**
+ * Copies SCSS files from the input directory to the output directory.
+ *
+ * @param options ProcessFilesOptions
+ *   Command configuration options.
+ *
+ * @returns void
+ *
+ */
+function copyScssFiles(options: ProcessFilesOptions) {
+  const { input, output: dest } = options;
+  const outputDir = path.join(dest.toString(), '/twig');
+
+  // Find SCSS files in the input directory.
+  const scssFiles = glob.sync(path.join(input, '**/components/**/*.scss'));
+
+  // Copy each SCSS file to the output directory.
+  scssFiles.forEach((filePath) => {
+    try {
+      let relativePath = filePath.toString().replace(input, '');
+      // Insert /src/ before the filename.
+      relativePath = relativePath.replace(/^(.*)(\/)([^\/]*)$/, '$1/src/$3');
+      const outputFilePath = path.join(outputDir, relativePath.toString());
+      const dirname = path.dirname(outputFilePath);
+      if (!fs.existsSync(dirname)) {
+        fs.mkdirSync(dirname, {recursive: true});
+      }
+
+      fs.copyFileSync(filePath, outputFilePath);
+    } catch (error) {
+      console.error('Error copying SCSS files:', error);
+    }
+  });
+}
+
+//
 // Call processFiles with parsed options
+//
 processFiles({
   input: argv.input,
   output: argv.output,
   glob: argv.glob,
   saveAst: argv['save-ast'],
+  saveStyles: argv['save-styles'],
   saveComponentDef: argv['save-component-def'],
   defaultSlotName: argv['default-slot-name'],
 });
