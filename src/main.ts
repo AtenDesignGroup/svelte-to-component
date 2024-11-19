@@ -4,27 +4,12 @@ import type { PathLike } from 'fs';
 import path from 'path';
 import { glob } from 'glob';
 import { parse } from 'svelte/compiler';
+import merge from 'lodash/merge.js';
 import prettier from 'prettier';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-
-interface ProcessFilesOptions {
-  input: string; // Directory where svelte components are located
-  output: string; // Directory where the results are saved
-  glob: string; // Glob pattern for input files
-  saveAst: boolean; // Save AST to a JSON file
-  saveComponentDef: boolean; // Save component definition to a component.yml file
-  saveStyles: boolean; // Save SCSS styles to the src directory
-  defaultSlotName?: string; // Default slot ID
-}
-
-interface ComponentContext {
-  name: string;
-  components: Record<string, any>;
-  props: Record<string, any>;
-  slots: Record<string, any>;
-  styleSheets: Record<string, any>;
-}
+import { loadComponentDef, stringifyYaml } from './lib/componentYaml';
+import { ProcessFilesOptions, ComponentContext } from './types';
 
 // Parse command-line arguments
 const argv = yargs(hideBin(process.argv))
@@ -46,6 +31,12 @@ const argv = yargs(hideBin(process.argv))
     description: 'Glob pattern for input files. This can be used to target specific files within the input directory.',
     demandOption: false,
     default: '**/components/**/!(*.stories).svelte',
+  })
+  .option('theme', {
+    alias: 't',
+    type: 'string',
+    description: 'Theme name used to namespace components',
+    demandOption: true,
   })
   .option('save-ast', {
     type: 'boolean',
@@ -142,7 +133,7 @@ async function saveTwigToFile(filePath: PathLike, template: string, options: Pro
   try {
     const formattedTemplate = await prettier.format(template, {
       parser: 'melody',
-      plugins: ['prettier-plugin-twig-melody'],
+      plugins: ['@supersoniks/prettier-plugin-twig-melody'],
     });
     console.log(`Saving Twig to ${outputFilePath}`);
     fs.writeFileSync(outputFilePath, formattedTemplate);
@@ -156,100 +147,52 @@ async function saveTwigToFile(filePath: PathLike, template: string, options: Pro
 
 // Function to convert AST node to component definition
 function convertNodeToComponentDef(node: any, context: ComponentContext) : string {
-  let output = `$schema: https://git.drupalcode.org/project/drupal/-/raw/10.3.x/core/assets/schemas/v1/metadata.schema.json
-name: ${context.name}`;
+  let def: any = {
+    '$schema': 'https://git.drupalcode.org/project/drupal/-/raw/10.3.x/core/assets/schemas/v1/metadata.schema.json',
+    name: context.name,
+  };
 
-  /**
-   * @todo Add support for required properties
-   *
-   *    # If your component has required properties, you list them here.
-   *  required:
-   *   - primary
-   */
+  if (context.props) {
 
- if (context.props) {
-    output += `
-props:
-  type: object
-  properties:`;
+    def.props = {
+      type: 'object',
+      properties: {},
+    };
+
     for (const key in context.props) {
-      output += `
-    ${key}:
-      type: ${context.props[key].type}`;
+      def.props.properties[key] = {
+        type: context.props[key].type,
+      };
 
-    /**
-     * @todo Add support for human-readable titles
-     *
-     * title: My Component
-     */
-    if (context.props[key].title) {
-      output += `
-      title: ${context.props[key].title}`;
-    }
+      if (context.props[key].title) {
+        def.props.properties[key].title = context.props[key].title;
+      }
 
-    // Add default value if it exists
-    if (context.props[key].default) {
-      output += `
-      default: ${context.props[key].default}`;
-    }
+      if (context.props[key].default) {
+        def.props.properties[key].default = context.props[key].default;
+      }
 
-    /**
-     * @todo Add support for enum values
-     *
-     * enum:
-     *   - 'One'
-     *   - 'Two'
-     *   - 'Three'
-     *   - null
-     */
-    if (context.props[key].enum) {
-      output += `
-      enum: ${context.props[key].enum}`;
-    }
+      if (context.props[key].enum) {
+        def.props.properties[key].enum = context.props[key].enum;
+      }
 
-    /**
-     * @todo Add support for descriptions
-     */
-    if (context.props[key].description) {
-      output += `
-      description: ${context.props[key].description}`;
+      if (context.props[key].description) {
+        def.props.properties[key].description = context.props[key].description;
+      }
     }
-  }}
+  }
 
   if (context.slots.length > 0) {
-    output += `
-slots:`;
-  context.slots.forEach((slot: any) => {
-  output += `
-  ${slot}: {}`;
-  });
-}
+    def.slots = {};
 
+    context.slots.forEach((slot: any) => {
+      def.slots[slot] = {};
+    });
+  }
 
+  def = merge(def, context.component);
 
-/**
- * @todo Add support for library overrides
- */
-// # This is how you take control of the keys in your library
-// # declaration. The overrides specified here will be merged (shallow merge)
-// # with the auto-generated library. The result of the merge will become the
-// # library for the component.
-// libraryOverrides:
-//   # Once you add a key in the overrides, you take control of it. What you
-//   # type here is what will end up in the library component.
-//   dependencies:
-//     - core/drupal
-//     - core/once
-
-//   # Here we are taking control of the JS assets. So we need to specify
-//   # everything, even the parts that were auto-generated. This is useful
-//   # when adding additional files or tweaking the <script>
-//   # tag's attributes.
-//   js:
-//     my-component.js: { attributes: { defer: true } }
-//     my-other-file.js: {}`
-
-  return output;
+  return stringifyYaml(def);
 }
 
 // Function to convert AST node to Twig
@@ -307,7 +250,7 @@ function convertNodeToTwig(node: any, options: ProcessFilesOptions) : string {
       case 'InlineComponent':
         children = node.children.map(childNode => convertNodeToTwig(childNode, options)).join('');
         attributes = node.attributes.map(childNode => convertNodeToObjectLiteral(childNode, options)).join(', ');
-        return `\n{% embed "${node.name}" with {${attributes}} only %}${children}{% endembed %}`;
+        return `\n{% embed "${options.theme}/${node.name}" with {${attributes}} only %}${children}{% endembed %}`;
       case 'EachBlock':
         const eachChildren = node.children.map(childNode => convertNodeToTwig(childNode, options)).join('');
         // Handle destructured each block
@@ -384,12 +327,17 @@ function createComponentContext(
   filePath: PathLike,
   options: ProcessFilesOptions
 ): ComponentContext {
-  // Extract component name from file path
-  const name = path.basename(filePath.toString(), '.svelte');
+  // Load a component.yml file if it exists
+  const userDefinedComponent = loadComponentDef(filePath, options);
+  const name = userDefinedComponent.name
+    ? userDefinedComponent.name
+    // Extract component name from file path as fallback.
+    : path.basename(filePath.toString(), '.svelte');
 
   // Initialize context
   const context: ComponentContext = {
     name,
+    component: userDefinedComponent,
     components: {},
     props: null,
     slots: [],
@@ -560,4 +508,5 @@ processFiles({
   saveStyles: argv['save-styles'],
   saveComponentDef: argv['save-component-def'],
   defaultSlotName: argv['default-slot-name'],
+  theme: argv.theme,
 });

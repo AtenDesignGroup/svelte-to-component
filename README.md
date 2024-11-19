@@ -16,6 +16,7 @@ This will process all `.svelte` files in the src directory and save the converte
 
 - `--input` or `-i`: Glob pattern for input files (required).
 - `--output` or `-o`: Directory where the results are saved (required).
+- `--theme` or `-t`: Theme name. This is used to generate the component definition file (required).
 - `--glob` or `-g`: Glob pattern for input files. This can be used to target or exclude specific files within the input directory. (default: `**/components/**/!(*.stories).svelte`)
 - `--save-ast`: Save AST to a JSON file (default: `false`).
 - `--save-component-def`: Save component definition to a *.component.yml file (default: `true`).
