@@ -21,7 +21,6 @@ export function loadComponentDef(filePath: PathLike, options: ProcessFilesOption
   const componentDefPath = filePath.toString().replace('.svelte', '.component.yml');
   if (fs.existsSync(componentDefPath)) {
     const content = fs.readFileSync(componentDefPath, 'utf8');
-    console.log('component.yml found', content);
     componentDef = parse(content);
   }
 
