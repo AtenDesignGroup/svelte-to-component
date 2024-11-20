@@ -15,6 +15,7 @@ export interface ComponentContext {
   component: any;
   components: Record<string, any>;
   props: Record<string, any>;
+  setStatements: Record<string, any>;
   slots: Record<string, any>;
   styleSheets: Record<string, any>;
 }

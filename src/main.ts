@@ -302,16 +302,42 @@ function convertNodeToObjectLiteral(node: any, options: ProcessFilesOptions) : s
         return `${node.name}: ${node.value.map(childNode => convertNodeToObjectLiteral(childNode, options)).join(' ')}`;
       case 'AttributeShorthand':
         return node.expression.name;
+      case 'BinaryExpression':
+        return `${convertNodeToObjectLiteral(node.left, options)} ${node.operator} ${convertNodeToObjectLiteral(node.right, options)}`;
       case 'Identifier':
         return node.name;
       case 'Literal':
         return node.raw;
       case 'ObjectExpression':
+        // Some properties are SpreadElements, which we need to handle separately but preserve the order.
+        if (node.properties.some((property: any) => property.type === 'SpreadElement')) {
+          // Initialize the object with the first property.
+          const firstProperty = node.properties[0];
+
+          const init = firstProperty.type === 'SpreadElement'
+            ? convertNodeToObjectLiteral(node.properties[0], options)
+            : `{${convertNodeToObjectLiteral(node.properties[0], options)}}`;
+          const mergedProperties = node.properties.slice(1).map(childNode =>
+            /** @todo handle grouping properties to imporove output. */
+            childNode.type === 'Property'
+              ? `{${convertNodeToObjectLiteral(childNode, options)}}`
+              : convertNodeToObjectLiteral(childNode, options)
+            ).join(', ');
+          return `${init}|merge(${mergedProperties})`;
+        }
         return `{${node.properties.map(childNode => convertNodeToObjectLiteral(childNode, options)).join(', ')}}`;
       case 'Property':
-        return `${node.key.name}: ${convertNodeToObjectLiteral(node.value, options)}`;
+        return `${convertNodeToObjectLiteral(node.key, options)}: ${convertNodeToObjectLiteral(node.value, options)}`;
       case 'MustacheTag':
         return convertNodeToObjectLiteral(node.expression, options);
+      case 'SpreadElement':
+        return convertNodeToObjectLiteral(node.argument, options);
+      case 'TemplateElement':
+        return node.value.cooked ? `'${node.value.cooked}'` : '';
+      case 'TemplateLiteral':
+        const elements = [...node.expressions, ...node.quasis]
+          .sort((a, b) =>  a.start - b.start);
+        return elements.map(childNode => convertNodeToObjectLiteral(childNode, options)).filter(a => a.length).join(' ~ ');
       case 'Text':
         return `'${node.data}'`;
     }
@@ -340,6 +366,7 @@ function createComponentContext(
     component: userDefinedComponent,
     components: {},
     props: null,
+    setStatements: {},
     slots: [],
     styleSheets: {},
   };
@@ -414,6 +441,20 @@ function createComponentContext(
   }
   findSlots(ast.html);
 
+  // Infer set statements by recursively searching the AST script for set nodes.
+  ast.instance?.content.body.forEach((node: any) => {
+    if (node.type === 'LabeledStatement' && node?.body?.type === 'ExpressionStatement') {
+      const expression = node.body.expression;
+      if (expression.type === 'AssignmentExpression' && expression.operator === '=') {
+        context.setStatements[expression.left.name] = convertNodeToObjectLiteral(expression.right, options);
+      }
+    }
+
+    if (node.type === 'VariableDeclaration') {
+      context.setStatements[node.declarations[0].id.name] = convertNodeToObjectLiteral(node.declarations[0].init, options);
+    }
+  });
+
   return context;
 }
 
@@ -434,7 +475,11 @@ function processFile(options: ProcessFilesOptions) {
       saveComponentDefToFile(filePath, componentDef, options);
     }
 
-    const twigTemplate = convertNodeToTwig(ast.html, options);
+    const templateSetStatements = Object.entries(context.setStatements)
+      .map(([key, value]) => `{% set ${key} = ${value} %}`).join('\n');
+    const templateBody = convertNodeToTwig(ast.html, options);
+
+    const twigTemplate = [templateSetStatements, templateBody].join('\n');
     saveTwigToFile(filePath, twigTemplate, options);
   }
 }
