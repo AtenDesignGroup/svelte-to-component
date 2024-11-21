@@ -3,13 +3,14 @@ import fs from 'node:fs';
 import type { PathLike } from 'fs';
 import path from 'path';
 import { glob } from 'glob';
-import { parse } from 'svelte/compiler';
+import { parse, compile } from 'svelte/compiler';
 import merge from 'lodash/merge.js';
 import prettier from 'prettier';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { loadComponentDef, stringifyYaml } from './lib/componentYaml';
 import { ProcessFilesOptions, ComponentContext } from './types';
+import { Alias } from 'yaml';
 
 // Parse command-line arguments
 const argv = yargs(hideBin(process.argv))
@@ -45,8 +46,16 @@ const argv = yargs(hideBin(process.argv))
     default: false,
   })
   .option('save-styles', {
+    alias: 'css',
     type: 'boolean',
     description: 'Save SCSS styles to the src directory',
+    demandOption: false,
+    default: true,
+  })
+  .option('save-scripts', {
+    alias: 'js',
+    type: 'boolean',
+    description: 'Save JS to the src directory',
     demandOption: false,
     default: true,
   })
@@ -115,6 +124,28 @@ function saveAstToFile(filePath: PathLike, ast: Record<string, any>, options: Pr
   const outputFilePath = path.join(outputDir, `${path.basename(filePath.toString())}.json`);
   console.log(`Saving AST to ${outputFilePath}`);
   fs.writeFileSync(outputFilePath, JSON.stringify(ast, null, 2));
+}
+
+function saveJsToFile(filePath: PathLike, jsContent: string, options: ProcessFilesOptions) {
+  const { input, output: dest } = options;
+  const relativePath = filePath.toString()
+    .replace(input, '')
+    .replace(/^(.*)(\/)([^\/]*)$/, '$1/src/$3');
+
+  const outputDir = path.join(dest.toString(), '/twig');
+  const outputFilePath = path.join(outputDir, relativePath.toString().replace('.svelte', '.js'));
+  const dirname = path.dirname(outputFilePath);
+  if (!fs.existsSync(dirname)) {
+    fs.mkdirSync(dirname, {recursive: true});
+  }
+
+  // Format the Twig template using Prettier
+  try {
+    console.log(`Saving JS to ${outputFilePath}`);
+    fs.writeFileSync(outputFilePath, jsContent);
+  } catch (error) {
+    console.error('Error formatting JS:', error);
+  }
 }
 
 // Function to save Twig file
@@ -202,11 +233,27 @@ function convertNodeToTwig(node: any, options: ProcessFilesOptions) : string {
   try {
     switch (node.type) {
       case 'Attribute':
+        // Handle boolean attributes.
+        if (node.value === true) {
+          return node.name;
+        }
         return `${node.name}="${node.value.map(childNode => convertNodeToTwig(childNode, options)).join('')}"`
+      case 'AttributeShorthand':
+        return `{{ ${node.expression.name} }}`;
       case 'ArrayPattern':
         return `${node.elements.map(childNode => convertNodeToTwig(childNode, options)).join(', ')}`;
       case 'BinaryExpression':
-        return `${convertNodeToTwig(node.left, options)} ${node.operator === '===' ? '==' : node.operator } ${convertNodeToTwig(node.right, options)}`;
+        let binaryOperator = node.operator;
+        switch (node.operator) {
+          case '===':
+          case '==':
+            binaryOperator = '==';
+            break;
+          case '!==':
+          case '!=':
+            binaryOperator = '!=';
+        }
+        return `${convertNodeToTwig(node.left, options)} ${binaryOperator} ${convertNodeToTwig(node.right, options)}`;
       case 'CallExpression':
         // Handle Object.entries
         // We'll assume objects passed to the template are associative arrays in PHP,
@@ -216,7 +263,7 @@ function convertNodeToTwig(node: any, options: ProcessFilesOptions) : string {
         }
         return `${convertNodeToTwig(node.callee, options)}(${node.arguments.map(childNode => convertNodeToTwig(childNode, options)).join(', ')})`;
       case 'ConditionalExpression':
-        return `${convertNodeToTwig(node.test, options)} ? ${convertNodeToTwig(node.consequent, options)} : ${convertNodeToTwig(node.alternate, options)}`;
+        return `${convertNodeToTwig(node.test, options)} ? ${convertNodeToObjectLiteral(node.consequent, options)} : ${convertNodeToObjectLiteral(node.alternate, options)}`;
       case 'Fragment':
         if (node.children) {
           return node.children.map(childNode => convertNodeToTwig(childNode, options)).join('');
@@ -274,7 +321,20 @@ function convertNodeToTwig(node: any, options: ProcessFilesOptions) : string {
         return node.value.raw;
       case 'TemplateLiteral':
         if (node.expressions?.length > 0) {
-          return `${node.quasis.map(childNode => convertNodeToTwig(childNode, options)).join('')} {{${node.expressions.map(childNode => convertNodeToTwig(childNode, options)).join('')}}}`;
+          const elements = [...node.expressions, ...node.quasis]
+            .sort((a, b) =>  a.start - b.start);
+          return `${elements.map(childNode => {
+            switch (childNode.type) {
+              case 'TemplateElement':
+                return childNode.value.raw;
+              case 'LogicalExpression':
+                if (childNode.operator === '||') {
+                  return `{{ ${convertNodeToObjectLiteral(childNode.left, options)}|default(${convertNodeToObjectLiteral(childNode.right, options)}) }}`;
+                }
+              default:
+                return `{{ ${convertNodeToTwig(childNode, options)} }}`;
+            }
+          }).filter(a => a.length).join('')}`;
         }
         return node.quasis.map(childNode => convertNodeToTwig(childNode, options)).join('');
       case 'Text':
@@ -299,15 +359,38 @@ function convertNodeToObjectLiteral(node: any, options: ProcessFilesOptions) : s
       case 'ArrayPattern':
         return `${node.elements.map(childNode => convertNodeToTwig(childNode, options)).join(', ')}`;
       case 'Attribute':
+        if (node.value === true) {
+          return node.name;
+        }
         return `${node.name}: ${node.value.map(childNode => convertNodeToObjectLiteral(childNode, options)).join(' ')}`;
       case 'AttributeShorthand':
         return node.expression.name;
       case 'BinaryExpression':
-        return `${convertNodeToObjectLiteral(node.left, options)} ${node.operator} ${convertNodeToObjectLiteral(node.right, options)}`;
+        let operator = node.operator;
+        switch (node.operator) {
+          case '===':
+          case '==':
+            operator = '==';
+            break;
+          case '!==':
+          case '!=':
+            operator = '!=';
+        }
+        return `${convertNodeToObjectLiteral(node.left, options)} ${operator} ${convertNodeToObjectLiteral(node.right, options)}`;
+      case 'CallExpression':
+        return `${convertNodeToObjectLiteral(node.callee, options)}(${node.arguments.map(childNode => convertNodeToObjectLiteral(childNode, options)).join(', ')})`;
+      case 'ConditionalExpression':
+        return `${convertNodeToObjectLiteral(node.test, options)} ? ${convertNodeToObjectLiteral(node.consequent, options)} : ${convertNodeToObjectLiteral(node.alternate, options)}`;
       case 'Identifier':
         return node.name;
       case 'Literal':
         return node.raw;
+      case 'LogicalExpression':
+        if (node.operator === '&&') {
+          return `${convertNodeToObjectLiteral(node.left, options)} ? ${convertNodeToObjectLiteral(node.right, options)}`;
+        } else if (node.operator === '||') {
+          return `${convertNodeToObjectLiteral(node.left, options)}|default(${convertNodeToObjectLiteral(node.right, options)})`;
+        }
       case 'ObjectExpression':
         // Some properties are SpreadElements, which we need to handle separately but preserve the order.
         if (node.properties.some((property: any) => property.type === 'SpreadElement')) {
@@ -326,18 +409,37 @@ function convertNodeToObjectLiteral(node: any, options: ProcessFilesOptions) : s
           return `${init}|merge(${mergedProperties})`;
         }
         return `{${node.properties.map(childNode => convertNodeToObjectLiteral(childNode, options)).join(', ')}}`;
-      case 'Property':
-        return `${convertNodeToObjectLiteral(node.key, options)}: ${convertNodeToObjectLiteral(node.value, options)}`;
+      case 'MemberExpression':
+        return `${convertNodeToObjectLiteral(node.object, options)}.${convertNodeToObjectLiteral(node.property, options)}`;
       case 'MustacheTag':
         return convertNodeToObjectLiteral(node.expression, options);
+      case 'Property':
+        return `${convertNodeToObjectLiteral(node.key, options)}: ${convertNodeToObjectLiteral(node.value, options)}`;
       case 'SpreadElement':
         return convertNodeToObjectLiteral(node.argument, options);
       case 'TemplateElement':
         return node.value.cooked ? `'${node.value.cooked}'` : '';
       case 'TemplateLiteral':
-        const elements = [...node.expressions, ...node.quasis]
-          .sort((a, b) =>  a.start - b.start);
-        return elements.map(childNode => convertNodeToObjectLiteral(childNode, options)).filter(a => a.length).join(' ~ ');
+        if (node.expressions?.length > 0) {
+          const elements = [...node.expressions, ...node.quasis]
+            .sort((a, b) =>  a.start - b.start);
+          return `${elements.map(childNode => {
+            switch (childNode.type) {
+              case 'TemplateElement':
+                return `'${childNode.value.raw}'`;
+              case 'LogicalExpression':
+                if (childNode.operator === '||') {
+                  return `${convertNodeToObjectLiteral(childNode.left, options)}|default(${convertNodeToObjectLiteral(childNode.right, options)})`;
+                }
+                if (childNode.operator === '&&') {
+                  return `${convertNodeToObjectLiteral(childNode.left, options)} ? ${convertNodeToObjectLiteral(childNode.right, options)}`;
+                }
+              default:
+                return `${convertNodeToTwig(childNode, options)}`;
+            }
+          }).filter(a => a !== "''").join(' ~ ')}`;
+        }
+        return node.quasis.map(childNode => convertNodeToTwig(childNode, options)).join('');
       case 'Text':
         return `'${node.data}'`;
     }
@@ -408,9 +510,10 @@ function createComponentContext(
             }
           } else if (declaration.init?.type === 'ObjectExpression') {
             type = 'object';
-          }
-
-          else if (declaration.init?.type) {
+          } else if (declaration.init?.type === 'Identifier') {
+            console.log('It;s an identifier:', node);
+          } else if (declaration.init?.type) {
+            console.log('Unhandled type:', node);
             console.log(declaration.init.type);
           }
 
@@ -465,14 +568,22 @@ function processFile(options: ProcessFilesOptions) {
     const ast: Record<string, any> = parse(fileContent);
     const context = createComponentContext(ast, filePath, options);
 
-
     if (options.saveAst) {
       saveAstToFile(filePath, ast, options);
     }
 
-    if (options.saveComponentDef) {
-      const componentDef = convertNodeToComponentDef(ast, context);
-      saveComponentDefToFile(filePath, componentDef, options);
+    const componentDef = convertNodeToComponentDef(ast, context);
+
+    // Handle component scripts
+    if (options.saveScripts) {
+      const jsFilePath = filePath.toString().replace('.svelte', '.js');
+      if (fs.existsSync(jsFilePath)) {
+        const jsContent = fs.readFileSync(jsFilePath, 'utf-8');
+        const scriptString = createDrupalBehaviorScript(filePath, fileContent, ast, options, context);
+        const updatedJsContent = `${jsContent}\n${scriptString}`;
+
+        saveJsToFile(filePath, updatedJsContent, options);
+      }
     }
 
     const templateSetStatements = Object.entries(context.setStatements)
@@ -481,6 +592,10 @@ function processFile(options: ProcessFilesOptions) {
 
     const twigTemplate = [templateSetStatements, templateBody].join('\n');
     saveTwigToFile(filePath, twigTemplate, options);
+
+    if (options.saveComponentDef && componentDef) {
+      saveComponentDefToFile(filePath, componentDef, options);
+    }
   }
 }
 
@@ -542,6 +657,88 @@ function copyScssFiles(options: ProcessFilesOptions) {
   });
 }
 
+/**
+ * Copies JS files from the input directory to the output directory.
+ *
+ * @param options ProcessFilesOptions
+ *   Command configuration options.
+ *
+ * @returns void
+ *
+ */
+function copyJsFiles(options: ProcessFilesOptions) {
+  const { input, output: dest } = options;
+  const outputDir = path.join(dest.toString(), '/twig');
+
+  // Find JS files in the input directory.
+  const jsFiles = glob.sync(path.join(input, '**/components/**/*.js'));
+
+  // Copy each JS file to the output directory.
+  jsFiles.forEach((filePath) => {
+    try {
+      let relativePath = filePath.toString().replace(input, '');
+      // Insert /src/ before the filename.
+      relativePath = relativePath.replace(/^(.*)(\/)([^\/]*)$/, '$1/src/$3');
+      const outputFilePath = path.join(outputDir, relativePath.toString());
+      const dirname = path.dirname(outputFilePath);
+      if (!fs.existsSync(dirname)) {
+        fs.mkdirSync(dirname, {recursive: true});
+      }
+
+      fs.copyFileSync(filePath, outputFilePath);
+    } catch (error) {
+      console.error('Error copying JS files:', error);
+    }
+  });
+}
+
+function createDrupalBehaviorScript(filePath: PathLike, fileContent: string, ast: Record<string, any>, options: ProcessFilesOptions,  context: ComponentContext) {
+  const { input, output: dest, theme } = options;
+  const relativePath = filePath.toString().replace(input, '');
+  const outputDir = path.join(dest.toString(), '/twig');
+  const outputFilePath = path.join(outputDir, relativePath.toString().replace('.svelte', '.js'));
+  const dirname = path.dirname(outputFilePath);
+  if (!fs.existsSync(dirname)) {
+    fs.mkdirSync(dirname, {recursive: true});
+  }
+
+  const behaviorId = [theme, context.name.replace(/[^a-zA-Z0-9]/g, '_')].join('_').toLowerCase();
+
+  /** @todo Translate the `onDestroy` lifecycle hook to `.detach` */
+
+  // Extract the script from the AST onMount function
+  const onMount = ast.instance?.content?.body?.find((node: any) => {
+    return node.type === 'ExpressionStatement'
+      && node?.expression?.type === 'CallExpression'
+      && node.expression?.callee?.name === 'onMount';
+  });
+
+  if (!onMount) {
+    return null;
+  }
+
+  // Get the substring of the onMount function from the file content
+  // using the start and end positions of the function body from the AST.
+  // Reach into onMount and extract the function body.
+  const onMountContent = onMount.expression.arguments[0].body.body[0];
+  const start = onMountContent.start;
+  const end = onMountContent.end;
+  const functionBody = fileContent
+    .substring(start, end)
+    // Replace document with context.
+    .replace('.attach(document', '.attach(context');
+
+  const script = `
+(function (Drupal) {
+  Drupal.behaviors.${behaviorId} = {
+    attach: function (context, settings) {
+      ${functionBody}
+    }
+  };
+})(Drupal);`;
+
+   return script;
+}
 //
 // Call processFiles with parsed options
 //
@@ -550,6 +747,7 @@ processFiles({
   output: argv.output,
   glob: argv.glob,
   saveAst: argv['save-ast'],
+  saveScripts: argv['save-scripts'],
   saveStyles: argv['save-styles'],
   saveComponentDef: argv['save-component-def'],
   defaultSlotName: argv['default-slot-name'],

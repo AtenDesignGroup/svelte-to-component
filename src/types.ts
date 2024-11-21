@@ -6,6 +6,7 @@ export interface ProcessFilesOptions {
   output: string; // Directory where the results are saved
   saveAst: boolean; // Save AST to a JSON file
   saveComponentDef: boolean; // Save component definition to a component.yml file
+  saveScripts: boolean; // Save JS to the src directory
   saveStyles: boolean; // Save SCSS styles to the src directory
   theme: string; // Theme name used to namespace components
 }
