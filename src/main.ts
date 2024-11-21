@@ -295,9 +295,19 @@ function convertNodeToTwig(node: any, options: ProcessFilesOptions) : string {
         const ifChildren = node.children.map(childNode => convertNodeToTwig(childNode, options)).join('');
         return `{% if ${condition} %}${ifChildren}{% endif %}`;
       case 'InlineComponent':
-        children = node.children.map(childNode => convertNodeToTwig(childNode, options)).join('');
+        /** @todo Use include syntax if the component has no children.  */
         attributes = node.attributes.map(childNode => convertNodeToObjectLiteral(childNode, options)).join(', ');
-        return `\n{% embed "${options.theme}/${node.name}" with {${attributes}} only %}${children}{% endembed %}`;
+        const inlineComponentId = `${options.theme}:${node.name.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase()}`;
+        if (node.children.length <= 0) {
+          return `\n{{ include('${inlineComponentId}', {${attributes}}, with_context = false) }}`;
+        } else {
+          children = node.children.map(childNode => convertNodeToTwig(childNode, options)).join('');
+          return `\n{% embed "${inlineComponentId}" with {${attributes}} only %}
+            {% block ${options.defaultSlotName} %}
+            ${children}
+            {% endblock %}
+          {% endembed %}`;
+        }
       case 'EachBlock':
         const eachChildren = node.children.map(childNode => convertNodeToTwig(childNode, options)).join('');
         // Handle destructured each block
