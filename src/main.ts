@@ -308,6 +308,8 @@ function convertNodeToTwig(node: any, options: ProcessFilesOptions) : string {
           return `{% for ${convertNodeToTwig(node.expression, options)}_item in ${convertNodeToTwig(node.expression, options)} %}${eachChildren}{% endfor %}`;
         }
         return `{% for ${convertNodeToTwig(node.expression, options)}_item in ${convertNodeToTwig(node.expression, options)} %}${eachChildren}{% endfor %}`;
+      case 'RawMustacheTag':
+        return `{{ ${convertNodeToTwig(node.expression, options)} }}`;
       case 'Slot':
         let id = options.defaultSlotName;
         const nameAttribute = node.attributes.find((attr: any) => { return attr.name === 'name'; });
@@ -415,6 +417,8 @@ function convertNodeToObjectLiteral(node: any, options: ProcessFilesOptions) : s
         return convertNodeToObjectLiteral(node.expression, options);
       case 'Property':
         return `${convertNodeToObjectLiteral(node.key, options)}: ${convertNodeToObjectLiteral(node.value, options)}`;
+      case 'RawMustacheTag':
+        return `{{ ${convertNodeToTwig(node.expression, options)} }}`;
       case 'SpreadElement':
         return convertNodeToObjectLiteral(node.argument, options);
       case 'TemplateElement':
