@@ -164,7 +164,7 @@ async function saveTwigToFile(filePath: PathLike, template: string, options: Pro
   try {
     const formattedTemplate = await prettier.format(template, {
       parser: 'melody',
-      plugins: ['./node_modules/@supersoniks/prettier-plugin-twig-melody'],
+      plugins: ['@supersoniks/prettier-plugin-twig-melody'],
     });
     console.log(`Saving Twig to ${outputFilePath}`);
     fs.writeFileSync(outputFilePath, formattedTemplate);
