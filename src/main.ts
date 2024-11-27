@@ -261,6 +261,13 @@ function convertNodeToTwig(node: any, options: ProcessFilesOptions) : string {
         if (node.callee.type === 'MemberExpression' && node.callee.object.name === 'Object' && node.callee.property.name === 'entries') {
           return node.arguments.map(childNode => convertNodeToTwig(childNode, options)).join(', ');
         }
+
+        // Handle twig filters.
+        const twigFilters = ['join', 'default', 'merge'];
+        if (node.callee.type === 'MemberExpression' && twigFilters.includes(node.callee.property.name)) {
+          return `${convertNodeToTwig(node.callee.object, options)}|${convertNodeToTwig(node.callee.property, options)}(${node.arguments.map(childNode => convertNodeToTwig(childNode, options)).join(', ')})`;
+        }
+
         return `${convertNodeToTwig(node.callee, options)}(${node.arguments.map(childNode => convertNodeToTwig(childNode, options)).join(', ')})`;
       case 'ConditionalExpression':
         return `${convertNodeToTwig(node.test, options)} ? ${convertNodeToObjectLiteral(node.consequent, options)} : ${convertNodeToObjectLiteral(node.alternate, options)}`;
