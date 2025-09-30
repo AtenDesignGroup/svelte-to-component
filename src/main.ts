@@ -235,6 +235,7 @@ function convertNodeToTwig(node: any, options: ProcessFilesOptions) : string {
       case 'Attribute':
         // Handle boolean attributes.
         if (node.value === true) {
+          console.warn(`\x1b[43m The attribute "${node.name}" is treated as an HTML boolean attribute. If the intent is to destructure a prop value, you must explicitly define it as such. For example: ${node.name}={${node.name}}} \x1b[0m`);
           return node.name;
         }
         return `${node.name}="${node.value.map(childNode => convertNodeToTwig(childNode, options)).join('')}"`
@@ -289,6 +290,13 @@ function convertNodeToTwig(node: any, options: ProcessFilesOptions) : string {
         } else {
           return `<${node.name} ${attributes}>${children}</${node.name}>`;
         }
+      case 'ElseBlock':
+        // An elseif block is an else with a nested if block as its only child.
+        if (node?.children?.length === 1 && node.children[0].type === 'IfBlock') {
+          return convertNodeToTwig(node.children[0], options);
+        }
+        const elseChildren = node.children.map(childNode => convertNodeToTwig(childNode, options)).join('');
+        return `{% else %}${elseChildren}`;
       case 'Identifier':
         return node.name;
       case 'MemberExpression':
@@ -300,7 +308,11 @@ function convertNodeToTwig(node: any, options: ProcessFilesOptions) : string {
       case 'IfBlock':
         const condition = convertNodeToTwig(node.expression, options);
         const ifChildren = node.children.map(childNode => convertNodeToTwig(childNode, options)).join('');
-        return `{% if ${condition} %}${ifChildren}{% endif %}`;
+        const elseBlock = node.else ? convertNodeToTwig(node.else, options) : '';
+        if (node.elseif === true) {
+          return `{% elseif ${condition} %}${ifChildren}${elseBlock}`;
+        }
+        return `{% if ${condition} %}${ifChildren}${elseBlock}{% endif %}`;
       case 'InlineComponent':
         /** @todo Use include syntax if the component has no children.  */
         attributes = node.attributes.map(childNode => convertNodeToObjectLiteral(childNode, options)).join(', ');
@@ -320,6 +332,9 @@ function convertNodeToTwig(node: any, options: ProcessFilesOptions) : string {
         // Handle destructured each block
         if (node.context.type === 'ArrayPattern') {
           return `{% for ${convertNodeToTwig(node.context, options)} in ${convertNodeToTwig(node.expression, options)} %}${eachChildren}{% endfor %}`;
+        }
+        if (node.context.type === 'Identifier') {
+          return `{% for ${node.index ? `${node.index}, ` : ''}${convertNodeToTwig(node.context, options)} in ${convertNodeToTwig(node.expression, options)} %}${eachChildren}{% endfor %}`;
         }
         if (node.context.type === 'ObjectPattern') {
           return `{% for ${convertNodeToTwig(node.expression, options)}_item in ${convertNodeToTwig(node.expression, options)} %}${eachChildren}{% endfor %}`;
@@ -403,6 +418,9 @@ function convertNodeToObjectLiteral(node: any, options: ProcessFilesOptions) : s
       case 'Identifier':
         return node.name;
       case 'Literal':
+        if (node.regex) {
+          console.log(`\x1b[43m Regex literals are not natively supported in Twig. The regex ${node.raw} will be converted to a string. \x1b[0m`);
+        }
         return node.raw;
       case 'LogicalExpression':
         if (node.operator === '&&') {
@@ -511,6 +529,8 @@ function createComponentContext(
           if (declaration.init?.type === 'ArrayExpression') {
             type = 'array';
             defaultValue = `[${declaration.init.elements.map((element: any) => element.raw).join(', ')}]`;
+          } else if (declaration.init?.type === 'ConditionalExpression') {
+            console.log(`\x1b[43m The prop "${id}" in component "${context.name}" is initialized with a computed value. This will be ignored in the Twig template unless converted to a reactive declaration. See https://github.com/sveltejs/rfcs/blob/master/text/0003-reactive-declarations.md \x1b[0m`);
           } else if (declaration.init?.type === 'Literal') {
             switch (typeof declaration.init.value) {
               case 'boolean':
@@ -532,7 +552,11 @@ function createComponentContext(
           } else if (declaration.init?.type === 'ObjectExpression') {
             type = 'object';
           } else if (declaration.init?.type === 'Identifier') {
-            console.log('It;s an identifier:', node);
+            if (declaration.init.name === 'undefined') {
+              console.log(`\x1b[43m The prop "${id}" in component "${context.name}" is initialized to "undefined". It's better to provide a default value or no value at all. \x1b[0m`);
+            } else {
+              console.log('It\'s an identifier:', node);
+            }
           } else if (declaration.init?.type) {
             console.log('Unhandled type:', node);
             console.log(declaration.init.type);
