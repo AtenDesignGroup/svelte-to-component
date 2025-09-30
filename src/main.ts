@@ -235,7 +235,6 @@ function convertNodeToTwig(node: any, options: ProcessFilesOptions) : string {
       case 'Attribute':
         // Handle boolean attributes.
         if (node.value === true) {
-          console.warn(`\x1b[43m The attribute "${node.name}" is treated as an HTML boolean attribute. If the intent is to destructure a prop value, you must explicitly define it as such. For example: ${node.name}={${node.name}}} \x1b[0m`);
           return node.name;
         }
         return `${node.name}="${node.value.map(childNode => convertNodeToTwig(childNode, options)).join('')}"`
@@ -280,6 +279,9 @@ function convertNodeToTwig(node: any, options: ProcessFilesOptions) : string {
       case 'Literal':
         return node.raw;
       case 'LogicalExpression':
+        if (node.operator === '??') {
+          return `${convertNodeToTwig(node.left, options)}|default(${convertNodeToObjectLiteral(node.right, options)})`;
+        }
         let operator = node.operator === '&&' ? 'and' : 'or';
         return `${convertNodeToTwig(node.left, options)} ${operator} ${convertNodeToTwig(node.right, options)}`;
       case 'Element':
@@ -302,9 +304,10 @@ function convertNodeToTwig(node: any, options: ProcessFilesOptions) : string {
       case 'MemberExpression':
         return `${convertNodeToTwig(node.object, options)}.${convertNodeToTwig(node.property, options)}`;
       case 'MustacheTag':
-        return node.expression.type === 'TemplateLiteral'
-          ? convertNodeToTwig(node.expression, options)
-          : `{{ ${convertNodeToTwig(node.expression, options)} }}`;
+        if (node.expression.type === 'TemplateLiteral') {
+          return convertNodeToTwig(node.expression, options);
+        }
+        return `{{ ${convertNodeToTwig(node.expression, options)} }}`;
       case 'IfBlock':
         const condition = convertNodeToTwig(node.expression, options);
         const ifChildren = node.children.map(childNode => convertNodeToTwig(childNode, options)).join('');
@@ -352,7 +355,7 @@ function convertNodeToTwig(node: any, options: ProcessFilesOptions) : string {
         }
         return `{% block ${id} %}${node.children.map(childNode => convertNodeToTwig(childNode, options)).join('')}{% endblock %}`;
       case 'TemplateElement':
-        return node.value.raw;
+        return `'${node.value.cooked}'`;
       case 'TemplateLiteral':
         if (node.expressions?.length > 0) {
           const elements = [...node.expressions, ...node.quasis]
@@ -394,7 +397,8 @@ function convertNodeToObjectLiteral(node: any, options: ProcessFilesOptions) : s
         return `${node.elements.map(childNode => convertNodeToTwig(childNode, options)).join(', ')}`;
       case 'Attribute':
         if (node.value === true) {
-          return node.name;
+          // Assume a boolean attribute is meant to be destructured rather than an HTML boolean attribute.
+          return `${node.name}: ${node.name}`;
         }
         return `${node.name}: ${node.value.map(childNode => convertNodeToObjectLiteral(childNode, options)).join(' ')}`;
       case 'AttributeShorthand':
@@ -425,8 +429,12 @@ function convertNodeToObjectLiteral(node: any, options: ProcessFilesOptions) : s
       case 'LogicalExpression':
         if (node.operator === '&&') {
           return `${convertNodeToObjectLiteral(node.left, options)} ? ${convertNodeToObjectLiteral(node.right, options)}`;
-        } else if (node.operator === '||') {
-          return `${convertNodeToObjectLiteral(node.left, options)}|default(${convertNodeToObjectLiteral(node.right, options)})`;
+        }
+        if (node.operator === '??') {
+          return `${convertNodeToTwig(node.left, options)}|default(${convertNodeToObjectLiteral(node.right, options)})`;
+        }
+        if (node.operator === '||') {
+          return `(${convertNodeToTwig(node.left, options)} or ${convertNodeToTwig(node.right, options)})`;
         }
       case 'ObjectExpression':
         // Some properties are SpreadElements, which we need to handle separately but preserve the order.
