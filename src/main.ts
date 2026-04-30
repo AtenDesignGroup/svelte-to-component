@@ -163,8 +163,8 @@ async function saveTwigToFile(filePath: PathLike, template: string, options: Pro
   // Format the Twig template using Prettier
   try {
     const formattedTemplate = await prettier.format(template, {
-      parser: 'jinja-template',
-      plugins: ['prettier-plugin-jinja-template'],
+      parser: 'twig',
+      plugins: ['@zackad/prettier-plugin-twig'],
     });
     console.log(`Saving Twig to ${outputFilePath}`);
     fs.writeFileSync(outputFilePath, formattedTemplate);

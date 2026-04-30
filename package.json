@@ -21,11 +21,11 @@
     "typescript": "~5.6.2"
   },
   "dependencies": {
+    "@zackad/prettier-plugin-twig": "^0.17.0",
     "cross-spawn": ">=7.0.5",
     "glob": "^11.0.0",
     "lodash": "^4.17.21",
     "prettier": "^3.5.3",
-    "prettier-plugin-jinja-template": "^2.1.0",
     "svelte": "^5.1.6",
     "yaml": "^2.6.0",
     "yargs": "^17.7.2"
