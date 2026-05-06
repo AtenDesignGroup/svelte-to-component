@@ -29,5 +29,8 @@
     "svelte": "^5.1.6",
     "yaml": "^2.6.0",
     "yargs": "^17.7.2"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
